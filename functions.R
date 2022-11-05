@@ -51,8 +51,9 @@ get_archived_sources <- function(package){
            last_modified != "",
            size != "-") %>%
     mutate(last_modified = lubridate::ymd_hm(last_modified),
-           url = paste0(root_url, name)) %>%
-    select(name, url, last_modified, size)
+           url = paste0(root_url, package, "/", name)) %>%
+    select(version = name, url, last_modified, size) %>%
+    mutate(version = str_remove_all(version, "\\.tar\\.gz"))
 }
 
 #' Get a tibble with current available packages on CRAN
@@ -63,7 +64,9 @@ get_archived_sources <- function(package){
 #' @details
 #' This function is a simple wrapper around `available.packages()`
 #' @examples
+#' \dontrun{
 #' get_available_packages()
+#' }
 get_available_packages <- function(...){
 
   as_tibble(available.packages(...)) %>%
@@ -71,32 +74,72 @@ get_available_packages <- function(...){
 
 }
 
-get_view_packages_list <- function(view_url){
+#' Get a tibble of packages from a CRAN Task View
+#' @param view String. View of interest
+#' @param date String, format: '2015-01-01'. Queries MRAN to download state of the view at given date
+#' @importFrom ctv ctv
+#' @importFrom tibble as_tibble
+#' @return A tibble of 2 columns
+#' @details
+#' This function is a simple wrapper around `ctv::ctv()`
+#' @examples
+#' \dontrun{
+#' get_packages_from_view("Econometrics")
+#' get_packages_from_view("Bayesian", "2022-01-01")
+#' }
+get_packages_from_view <- function(view, date = "2015-01-01"){
+  ctv::ctv(view = view,
+           repos = paste0("https://cran.microsoft.com/snapshot/",
+                          date)) %>%
+    pluck("packagelist") %>%
+    as_tibble()
+}
 
-  view_url %>%
-    read_html() %>%
-    html_elements("li") %>%
-    html_elements("a") %>%
-    html_attr("href") %>%  
-    keep(., ~grepl("\\.\\.\\/packages", .)) %>%
-    stringr::str_remove_all("\\.\\.\\/packages\\/") %>%  
-    stringr::str_remove_all("\\/index\\.html") 
+#' Get a tibble of source urls for a selection of packages
+#' @param view_df A data frame as returned by `get_packages_from_view()`
+#' @importFrom dplyr mutate select rename
+#' @importFrom tidyr unnest
+#' @return A tibble of 5 columns.
+#' @details
+#' This function returns a data frame with a column `name` giving the name
+#' of a package, `version` giving its version, `url` the download url
+#' `last_modified` the date on which the package was last modified on CRAN
+#' and `size`, the size of the package
+#' @examples
+#' \dontrun{
+#' ctv_econ <- get_packages_from_view("Econometrics", date = "2015-01-01")
+#' get_sources_format_selected_packages(ctv_econ)
+#' }
+get_sources_for_selected_packages <- function(view_df){
 
+  view_df %>%
+    mutate(sources = map(name, get_archived_sources)) %>%
+    select(-core) %>%
+    unnest(cols = c(sources))
 
 }
 
-get_view_packages_table <- function(view_url){
+# https://cran.r-project.org/src/contrib/Archive/car/car_0.8-1.tar.gz
+# function to download source package, and extract man/
+get_man_package <- function(name, version, url, clean = TRUE){
 
-  view_url %>%
-    read_html() %>%
-    html_nodes(xpath = "/html/body/table[2]") %>%
-    html_table(fill=TRUE) %>%
-    pluck(1) %>%
-    pivot_wider(names_from = "X1", values_from = "X2") %>%
-    clean_names() %>%
-    mutate(across(everything(), ~stringr::str_remove_all(., "\\.$"))) %>%  
-    as.list() %>%
-    purrr::map(., ~strsplit(., ", ")) %>%
-    purrr::flatten()
+  path_tempfile <- tempfile(fileext = ".tar.gz")
+
+  download.file(url,
+                destfile = path_tempfile)
+
+  exdir_path <- paste0("archives/", name, "/", version )
+
+  untar(path_tempfile, exdir = exdir_path, extras = "--strip-components=1")
+
+  if(clean){
+
+    files_to_delete <- list.files(exdir_path,
+                                  full.names = TRUE) %>%
+      setdiff(paste0("archives/", name, "/", version, "/man"))
+
+    unlink(files_to_delete,
+           recursive = TRUE)
+  }
 
 }
